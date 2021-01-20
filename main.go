@@ -59,7 +59,6 @@ type StatusResponse struct {
 }
 
 func newKubernetesClient(appConfig *ApplicationConfig) (*kubernetes.Clientset, error) {
-
 	var config *rest.Config
 	var err error
 
@@ -220,13 +219,13 @@ func main() {
 
 			if len(errors) > 0 {
 				for _, err := range errors {
-					fmt.Printf("Error: %s\n", err)
+					log.Printf("Error: %s\n", err)
 				}
 			}
 
 			if len(warnings) > 0 {
 				for _, warn := range warnings {
-					fmt.Printf("Warning: %s\n", warn)
+					log.Printf("Warning: %s\n", warn)
 				}
 			}
 
@@ -237,16 +236,29 @@ func main() {
 		}
 	}()
 
-	http.ListenAndServe(fmt.Sprintf(":%d", appConfig.ListenPort), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Starting server on port %d\n", appConfig.ListenPort)
+
+	err = http.ListenAndServe(fmt.Sprintf(":%d", appConfig.ListenPort), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Content-Type", "application/json")
-		w.WriteHeader(200)
+
+		if len(currentStatus.Errors) > 0 {
+			w.WriteHeader(202)
+		} else if len(currentStatus.Warnings) > 0 {
+			w.WriteHeader(201)
+		} else {
+			w.WriteHeader(200)
+		}
 
 		j, err := json.MarshalIndent(currentStatus, "", "  ")
 		if err != nil {
-			w.Write([]byte(fmt.Sprintf("{\"error\": \"%s\"\n", err.Error())))
+			w.Write([]byte(fmt.Sprintf("{\"error\": \"%s\"}\n", err.Error())))
 			return
 		}
 
 		w.Write(j)
 	}))
+
+	if err != nil {
+		log.Fatalf("Failed to start webserver on port %d: %s\n", appConfig.ListenPort, err.Error())
+	}
 }
