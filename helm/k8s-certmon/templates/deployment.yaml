@@ -1,0 +1,60 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "..name" .}}
+  labels:
+    app.kubernetes.io/name: {{ include "..name" . }}
+    helm.sh/chart: {{ include "..chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "..name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "..name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ include "..name" .}}
+      containers:
+        - name: {{ include "..name" .}}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+          - containerPort: {{ .Values.config.LISTEN_PORT }}
+            protocol: TCP
+          env:
+          - name: KUBECONFIG
+            valueFrom:
+              configMapKeyRef:
+                key: KUBECONFIG
+                name: {{ include "..name" . }}
+          - name: LISTEN_PORT
+            valueFrom:
+              configMapKeyRef:
+                key: LISTEN_PORT
+                name: {{ include "..name" . }}
+          - name: UPDATE_INTERVAL
+            valueFrom:
+              configMapKeyRef:
+                key: UPDATE_INTERVAL
+                name: {{ include "..name" . }}
+          - name: DAYS_LEFT_CRITICAL_THRESHOLD
+            valueFrom:
+              configMapKeyRef:
+                key: DAYS_LEFT_CRITICAL_THRESHOLD
+                name: {{ include "..name" . }}
+          - name: DAYS_LEFT_WARN_THRESHOLD
+            valueFrom:
+              configMapKeyRef:
+                key: DAYS_LEFT_WARN_THRESHOLD
+                name: {{ include "..name" . }}
+{{- if .Values.image.pullSecret }}
+      imagePullSecrets:
+      - name: {{ .Values.image.pullSecret }}
+{{- end }}

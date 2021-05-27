@@ -1,0 +1,6 @@
+apiVersion: v2
+appVersion: "1.0"
+description: Kubernetes certificate monitoring
+type: application
+name: k8s-certmon
+version: 0.1.0
