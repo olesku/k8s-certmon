@@ -13,6 +13,8 @@ ingress:
   host: "k8s-certmon.local"
   tls: false
   tlsSecretName: "certmon-tls"
+  #class: "internal"
+
   annotations:
     #ingress.kubernetes.io/ssl-redirect: "true"
     #kubernetes.io/tls-acme: "true"
