@@ -14,14 +14,13 @@ k8s-certmon connects to a Kubernetes cluster, looks through all ingress objects 
 
 ## HTTP status codes
 
-The API returns a JSON response with detailed information as well as setting HTTP status codes that reflects current status.
+The API returns a JSON response with detailed information and HTTP status codes that reflects current status.
 
 ### 200
-No certificate errors or warnings found
+No certificate errors or warnings found.
 
 ## 201
 Warnings found.
-Reasons can be found.
 
 ## 202
 Critical issues found.
