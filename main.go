@@ -13,7 +13,8 @@ import (
 	"time"
 
 	"github.com/kelseyhightower/envconfig"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -31,6 +32,8 @@ type ApplicationConfig struct {
 
 // CertificateInfo holds information about a certificate.
 type CertificateInfo struct {
+	SecretName  string   `json:"secretName"`
+	Namespace   string   `json:"namespace"`
 	Issuer      string   `json:"issuer"`
 	CommonNames []string `json:"commonNames"`
 	NotBefore   string   `json:"notBefore"`
@@ -40,22 +43,12 @@ type CertificateInfo struct {
 	IsValid     bool     `json:"isValid" default:"false"`
 }
 
-// IngressInfo holds information about a ingress.
-type IngressInfo struct {
-	Name            string            `json:"name"`
-	Namespace       string            `json:"namespace"`
-	Hosts           []string          `json:"hosts"`
-	TLSSecretName   string            `json:"tlsSecretName"`
-	x509            *x509.Certificate `json:"-"`
-	CertificateInfo *CertificateInfo  `json:"certificate"`
-}
-
 // StatusResponse holds the data for the JSON status response returned by this API.
 type StatusResponse struct {
-	LastUpdated  string         `json:"lastUpdated"`
-	Errors       []string       `json:"errors"`
-	Warnings     []string       `json:"warnings"`
-	Certificates []*IngressInfo `json:"certificates"`
+	LastUpdated  string             `json:"lastUpdated"`
+	Errors       []string           `json:"errors"`
+	Warnings     []string           `json:"warnings"`
+	Certificates []*CertificateInfo `json:"certificates"`
 }
 
 func newKubernetesClient(appConfig *ApplicationConfig) (*kubernetes.Clientset, error) {
@@ -84,106 +77,102 @@ func newKubernetesClient(appConfig *ApplicationConfig) (*kubernetes.Clientset, e
 
 // Parse a kubernetes secret as a PEM certificate and extract information.
 // Returns a x509.Certificate object.
-func getx509Data(client *kubernetes.Clientset, ingress *IngressInfo) (*x509.Certificate, error) {
-	secret, err := client.CoreV1().Secrets(ingress.Namespace).Get(context.Background(), ingress.TLSSecretName, v1.GetOptions{})
-	if err != nil {
-		return nil, err
-	}
+func getx509Data(client *kubernetes.Clientset, secret v1.Secret) (*x509.Certificate, error) {
 
 	tlsCrt, ok := secret.Data["tls.crt"]
 	if !ok {
-		return nil, fmt.Errorf("tls.crt does not exist in %s/%s", ingress.Namespace, ingress.TLSSecretName)
+		return nil, fmt.Errorf("tls.crt does not exist in %s/%s", secret.Namespace, secret.Name)
 	}
 
 	if len(tlsCrt) == 0 {
-		return nil, fmt.Errorf("tls.crt for %s/%s is empty", ingress.Namespace, ingress.TLSSecretName)
+		return nil, fmt.Errorf("tls.crt for %s/%s is empty", secret.Namespace, secret.Name)
 	}
 
 	block, _ := pem.Decode(tlsCrt)
 	if block == nil {
-		return nil, fmt.Errorf("Failed to decode certificate %s/%s", ingress.Namespace, ingress.TLSSecretName)
+		return nil, fmt.Errorf("Failed to decode certificate %s/%s", secret.Namespace, secret.Name)
 	}
 
 	parsedCert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse certificate %s/%s", ingress.Namespace, ingress.TLSSecretName)
+		return nil, fmt.Errorf("Failed to parse certificate %s/%s", secret.Namespace, secret.Name)
 	}
 
 	return parsedCert, nil
 }
 
-// Get a list of ingress objects and certificate data in the cluster.
-func getIngresses(appConfig *ApplicationConfig) (ingressInfoList []*IngressInfo, warnings []string, errors []string) {
-	namespaces, err := appConfig.KubeClient.CoreV1().Namespaces().List(context.Background(), v1.ListOptions{})
+// Get a list of tls secrets and its certificate data in the cluster.
+func getCertificateList(appConfig *ApplicationConfig) (certificateInfoList []*CertificateInfo, warnings []string, errors []string) {
+	namespaces, err := appConfig.KubeClient.CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		errors = append(errors, err.Error())
 		return nil, warnings, errors
 	}
 
 	for _, ns := range namespaces.Items {
-		ingresses, _ := appConfig.KubeClient.ExtensionsV1beta1().Ingresses(ns.Name).List(context.Background(), v1.ListOptions{})
+		secrets, _ := appConfig.KubeClient.CoreV1().Secrets(ns.Name).List(context.Background(), metav1.ListOptions{})
 		if err != nil {
 			continue
 		}
 
-		for _, ingress := range ingresses.Items {
-			tls := ingress.Spec.TLS
-			for _, tlsSpec := range tls {
-				ingressInfo := &IngressInfo{
-					Name:          ingress.Name,
-					Namespace:     ns.Name,
-					TLSSecretName: tlsSpec.SecretName,
-					Hosts:         tlsSpec.Hosts,
-					x509:          nil,
-				}
-
-				x509Data, err := getx509Data(appConfig.KubeClient, ingressInfo)
-
-				if err != nil {
-					errors = append(errors, err.Error())
-					continue
-				} else {
-					ingressInfo.x509 = x509Data
-					daysLeft := (x509Data.NotAfter.Unix() - time.Now().Unix()) / 86400
-
-					certInfo := &CertificateInfo{
-						NotBefore: x509Data.NotBefore.String(),
-						NotAfter:  x509Data.NotAfter.String(),
-						Issuer:    x509Data.Issuer.CommonName,
-						DNSNames:  x509Data.DNSNames,
-						DaysLeft:  int(daysLeft),
-						IsValid:   true,
-					}
-
-					for _, n := range x509Data.Subject.Names {
-						certInfo.CommonNames = append(certInfo.CommonNames, fmt.Sprintf("%v", n.Value))
-					}
-
-					if daysLeft <= 0 {
-						errors = append(errors, fmt.Sprintf("certificate %s/%s (%s) expired on %s", ns.Name, ingress.Name, strings.Join(certInfo.DNSNames, ", "), certInfo.NotAfter))
-						certInfo.IsValid = false
-					} else if daysLeft <= int64(appConfig.CritDaysLeft) {
-						errors = append(errors, fmt.Sprintf("certificate %s/%s (%s) will expire in %d days (%s).", ns.Name, ingress.Name, strings.Join(certInfo.DNSNames, ", "), certInfo.DaysLeft, certInfo.NotAfter))
-					} else if daysLeft < int64(appConfig.WarnDaysLeft) {
-						warnings = append(warnings, fmt.Sprintf("certificate %s/%s (%s) will expire in %d days (%s).", ns.Name, ingress.Name, strings.Join(certInfo.DNSNames, ", "), certInfo.DaysLeft, certInfo.NotAfter))
-					}
-
-					for _, h := range tlsSpec.Hosts {
-						if x509Data.VerifyHostname(h) != nil {
-							errors = append(errors, fmt.Sprintf("certificate for %s/%s is not valid for host %s", ns.Name, ingress.Name, h))
-							certInfo.IsValid = false
-						}
-					}
-
-					ingressInfo.CertificateInfo = certInfo
-				}
-
-				ingressInfoList = append(ingressInfoList, ingressInfo)
+		for _, secret := range secrets.Items {
+			if secret.Type != "kubernetes.io/tls" {
+				continue
 			}
+
+			if originNS, ok := secret.Labels["kubed.appscode.com/origin.namespace"]; ok {
+				if originNS != ns.Name {
+					continue
+				}
+			}
+
+			certificateInfo := &CertificateInfo{
+				SecretName: secret.Name,
+				Namespace:  ns.Name,
+			}
+
+			x509Data, err := getx509Data(appConfig.KubeClient, secret)
+
+			if err != nil {
+				errors = append(errors, err.Error())
+				continue
+			} else {
+				daysLeft := (x509Data.NotAfter.Unix() - time.Now().Unix()) / 86400
+
+				certificateInfo.NotBefore = x509Data.NotBefore.String()
+				certificateInfo.NotAfter = x509Data.NotAfter.String()
+				certificateInfo.Issuer = x509Data.Issuer.CommonName
+				certificateInfo.DNSNames = x509Data.DNSNames
+				certificateInfo.DaysLeft = int(daysLeft)
+				certificateInfo.IsValid = true
+
+				for _, n := range x509Data.Subject.Names {
+					certificateInfo.CommonNames = append(certificateInfo.CommonNames, fmt.Sprintf("%v", n.Value))
+				}
+
+				if daysLeft <= 0 {
+					errors = append(errors, fmt.Sprintf("certificate %s/%s (%s) expired on %s", ns.Name, certificateInfo.SecretName, strings.Join(certificateInfo.DNSNames, ", "), certificateInfo.NotAfter))
+					certificateInfo.IsValid = false
+				} else if daysLeft <= int64(appConfig.CritDaysLeft) {
+					errors = append(errors, fmt.Sprintf("certificate %s/%s (%s) will expire in %d days (%s).", ns.Name, certificateInfo.SecretName, strings.Join(certificateInfo.DNSNames, ", "), certificateInfo.DaysLeft, certificateInfo.NotAfter))
+				} else if daysLeft < int64(appConfig.WarnDaysLeft) {
+					warnings = append(warnings, fmt.Sprintf("certificate %s/%s (%s) will expire in %d days (%s).", ns.Name, certificateInfo.SecretName, strings.Join(certificateInfo.DNSNames, ", "), certificateInfo.DaysLeft, certificateInfo.NotAfter))
+				}
+			}
+
+			certificateInfoList = append(certificateInfoList, certificateInfo)
 		}
 	}
 
-	return ingressInfoList, warnings, errors
+	if warnings == nil {
+		warnings = make([]string, 0)
+	}
+
+	if errors == nil {
+		errors = make([]string, 0)
+	}
+
+	return certificateInfoList, warnings, errors
 }
 
 func main() {
@@ -208,13 +197,13 @@ func main() {
 		for {
 			start := time.Now().Unix()
 
-			log.Printf("Fetching ingress and certificate data.\n")
-			ingressList, warnings, errors := getIngresses(&appConfig)
+			log.Printf("Fetching secrets with certificate data.\n")
+			certList, warnings, errors := getCertificateList(&appConfig)
 			currentStatus = StatusResponse{
 				LastUpdated:  time.Now().String(),
 				Errors:       errors,
 				Warnings:     warnings,
-				Certificates: ingressList,
+				Certificates: certList,
 			}
 
 			if len(errors) > 0 {
@@ -231,7 +220,7 @@ func main() {
 
 			stop := time.Now().Unix()
 
-			log.Printf("Fetched %d ingress objects in %d seconds.\n\n", len(ingressList), stop-start)
+			log.Printf("Fetched %d tls secrets in %d seconds.\n\n", len(certList), stop-start)
 			time.Sleep(time.Duration(appConfig.UpdateInterval) * time.Second)
 		}
 	}()

@@ -1,5 +1,5 @@
 # k8s-certmon
-k8s-certmon connects to a Kubernetes cluster, looks through all ingress objects with TLS enabled, fetches information about the certificates and expose an API with detailed information about each certificate. It's intended to be used by monitoring systems to alert on expired and invalid certificates.
+k8s-certmon connects to a Kubernetes cluster, looks through all tls secret objects, fetches information about the certificates and expose an API with detailed information about each certificate. It's intended to be used by monitoring systems to alert on expired and invalid certificates.
 
 
 ## Configuration
